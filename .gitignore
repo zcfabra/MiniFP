@@ -40,3 +40,4 @@ classes/
 
 # Directory that holds compiler output
 out/
+.scala-build
