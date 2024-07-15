@@ -448,9 +448,9 @@ object Parser {
 
   def opToPrecendence(op: Token): Precedence = {
     op match {
-      case Add(_) | Sub(_) => Precedence.Addition
-      case Div(_) | Mul(_) => Precedence.Multiplication
-      case RParen(_)       => Precedence.Paren
+      case Add(_) | Sub(_) | Concat(_) => Precedence.Addition
+      case Div(_) | Mul(_)             => Precedence.Multiplication
+      case RParen(_)                   => Precedence.Paren
       case GT(_) | LT(_) | GTE(_) | LTE(_) | Eq(_) | NotEq(_) => Precedence.Comp
       case _ => Precedence.Lowest
     }
@@ -496,7 +496,7 @@ object Parser {
     token match {
       case Add(_) | Mul(_) | Div(_) | Sub(_) | Eq(_) | NotEq(_) | And(_) | Or(
             _
-          ) | Pipe(_) | GT(_) | LT(_) | LTE(_) | GTE(_) =>
+          ) | Pipe(_) | GT(_) | LT(_) | LTE(_) | GTE(_) | Concat(_) =>
         true
       case _ => false
     }
@@ -546,7 +546,8 @@ object Evaluator {
       case IfExpr(cond, thenExpr, elseExpr) =>
         for {
           condition <- evalNode(cond, context)
-          result <- condition match {
+          concreteCondition <- getConcreteValue(condition, context)
+          result <- concreteCondition match {
             case EvaluatedBool(true)  => evalNode(thenExpr, context)
             case EvaluatedBool(false) => evalNode(elseExpr, context)
             case x =>
@@ -676,9 +677,10 @@ object Evaluator {
       result <- (lConcrete, rConcrete) match {
         case (EvaluatedString(lval), EvaluatedString(rval)) =>
           evalStringBinary(lval, rval, operator)
-
         case (EvaluatedInt(lval), EvaluatedInt(rval)) =>
           evalIntegerBinary(lval, rval, operator)
+        case (EvaluatedBool(lval), EvaluatedBool(rval)) =>
+          evalBooleanBinary(lval, rval, operator)
         case _ => Left("Invalid Evaluated")
       }
     } yield result
@@ -705,34 +707,52 @@ object Evaluator {
       op: Token
   ): Either[String, Evaluated] = {
     val value = op match {
-      case Add(_) => Some(l + r)
-      case Sub(_) => Some(l - r)
-      case Mul(_) => Some(l * r)
-      case Div(_) => Some(l / r)
-      case LT(_) => Some(l < r)
-      case LTE(_) => Some(l <= r)
-      case GT(_) => Some(l > r)
-      case GTE(_) => Some(l >= r)
-      case x      => None
+      case Add(_)   => Some(l + r)
+      case Sub(_)   => Some(l - r)
+      case Mul(_)   => Some(l * r)
+      case Div(_)   => Some(l / r)
+      case LT(_)    => Some(l < r)
+      case Eq(_)    => Some(l == r)
+      case NotEq(_) => Some(l == r)
+      case LTE(_)   => Some(l <= r)
+      case GT(_)    => Some(l > r)
+      case GTE(_)   => Some(l >= r)
+      case x        => None
     }
     value match {
-      case Some(v: Int) => Right(EvaluatedInt(value = v))
+      case Some(v: Int)     => Right(EvaluatedInt(value = v))
       case Some(v: Boolean) => Right(EvaluatedBool(value = v))
-      case None    => Left(f"Invalid Operator $op for integers $l and $r")
+      case None => Left(f"Invalid Operator $op for integers $l and $r")
+    }
+  }
+  def evalBooleanBinary(
+      l: Boolean,
+      r: Boolean,
+      op: Token
+  ): Either[String, Evaluated] = {
+    val value = op match {
+      case Eq(_)    => Some(l == r)
+      case NotEq(_) => Some(l != r)
+      case And(_)   => Some(l && r)
+      case Or(_)    => Some(l || r)
+      case x        => None
+    }
+    value match {
+      case Some(v: Boolean) => Right(EvaluatedBool(value = v))
+      case None => Left(f"Invalid Operator $op for booleans $l and $r")
     }
   }
 }
 
 object MiniFP {
   def main(args: Array[String]) = {
-    val filename = "test.mfp"
+    val filename = "strings.mfp"
     val input = Source.fromFile(filename).getLines().mkString("\n")
     val result = Tokens
       .tokenize(input.toList)
       .flatMap((_, c) => {
         Parser.parse(c)
       })
-
     val evaluated = result match {
       case l @ Left(value) => l
       case Right(node, _)  => Evaluator.evalNode(node)

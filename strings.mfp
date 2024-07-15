@@ -1,0 +1,6 @@
+let w = "i" in 
+let x = "love" in
+let y = "functional" in
+let z = "programming" in
+
+w <> " " <> x <> " " <> y <> " " <> z  <> " " z
