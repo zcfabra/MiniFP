@@ -13,6 +13,8 @@ import Ast.FnCall
 import Evaluator.EvaluatedIdentifier
 import scala.io.Source
 import Ast.IfExpr
+import Ast.MatchExpr
+import Ast.CaseExpr
 
 type SpannedIx = Either[Int, (Int, Int)]
 
@@ -77,6 +79,29 @@ case class In(position: SpannedIx) extends Token with Spanned {
   override def toString(): String = f"in"
 }
 
+case class True(position: SpannedIx) extends Token with Spanned {
+  override def toString(): String = f"true"
+}
+
+case class False(position: SpannedIx) extends Token with Spanned {
+  override def toString(): String = f"false"
+}
+
+case class Match(position: SpannedIx) extends Token with Spanned {
+  override def toString(): String = f"match"
+}
+
+case class With(position: SpannedIx) extends Token with Spanned {
+  override def toString(): String = f"with"
+}
+case class Case(position: SpannedIx) extends Token with Spanned {
+  override def toString(): String = f"|"
+}
+
+case class RArrow(position: SpannedIx) extends Token with Spanned {
+  override def toString(): String = f"->"
+}
+
 case class If(position: SpannedIx) extends Token with Spanned {
   override def toString(): String = f"if"
 }
@@ -129,7 +154,7 @@ object Tokens {
     (h, t) match {
       case (
             ('!', '=') | ('=', '=') | ('|', '|') | ('&', '&') | ('|', '>') |
-            ('<', '>') | ('>', '=') | ('<', '=')
+            ('<', '>') | ('>', '=') | ('<', '=') | ('-', '>')
           ) =>
         true
       case _ => false
@@ -137,8 +162,8 @@ object Tokens {
   }
   def isSingleCharOperator(c: Char): Boolean = {
     c match {
-      case '+' | '-' | '/' | '=' | '*' | '<' | '>' => true
-      case _                                       => false
+      case '+' | '-' | '/' | '=' | '*' | '<' | '>' | '|' => true
+      case _                                             => false
     }
   }
 
@@ -152,6 +177,7 @@ object Tokens {
       case ('<', '>') => Concat(position = Right(ix, ix + 1))
       case ('<', '=') => LTE(position = Right(ix, ix + 1))
       case ('>', '=') => GTE(position = Right(ix, ix + 1))
+      case ('-', '>') => RArrow(position = Right(ix, ix + 1))
     }
   }
 
@@ -164,6 +190,7 @@ object Tokens {
       case '=' => Assign(position = Left(ix))
       case '<' => LT(position = Left(ix))
       case '>' => GT(position = Left(ix))
+      case '|' => Case(position = Left(ix))
     }
   }
 
@@ -225,12 +252,16 @@ object Tokens {
 
   def getKeyword(identifier: String, ix: Int, endIx: Int): Option[Token] = {
     identifier match {
-      case "let"  => Some(Let(position = Right(ix, endIx)))
-      case "in"   => Some(In(position = Right(ix, endIx)))
-      case "if"   => Some(If(position = Right(ix, endIx)))
-      case "then" => Some(Then(position = Right(ix, endIx)))
-      case "else" => Some(Else(position = Right(ix, endIx)))
-      case _      => None
+      case "let"   => Some(Let(position = Right(ix, endIx)))
+      case "in"    => Some(In(position = Right(ix, endIx)))
+      case "if"    => Some(If(position = Right(ix, endIx)))
+      case "then"  => Some(Then(position = Right(ix, endIx)))
+      case "else"  => Some(Else(position = Right(ix, endIx)))
+      case "true"  => Some(True(position = Right(ix, endIx)))
+      case "false" => Some(False(position = Right(ix, endIx)))
+      case "match" => Some(Match(position = Right(ix, endIx)))
+      case "with"  => Some(With(position = Right(ix, endIx)))
+      case _       => None
     }
 
   }
@@ -307,6 +338,9 @@ object Ast {
   case class LiteralExpr(value: Token) extends Node {
     // override def toString(): String = f"$value"
   }
+
+  case class MatchExpr(pattern: Node, caseExprs: List[CaseExpr]) extends Node
+  case class CaseExpr(caseStructure: Node, branchExpr: Node) extends Node
 }
 
 object Parser {
@@ -315,11 +349,10 @@ object Parser {
       precedence: Precedence = Precedence.Lowest
   ): Parsed = {
     tokens match {
-      case Nil => Left("None")
-
+      case Nil           => Left("None")
+      case Match(_) :: t => parseMatch(t)
       case Let(_) :: (ident @ (Identifier(_, _))) :: Assign(_) :: t =>
         parseLet(toIdentNode(ident), t)
-
       case Let(_) :: (ident @ (Identifier(_, _))) :: LParen(_) :: t =>
         parseFnDef(ident, t)
           .flatMap((fnVal, remaining) => parseLet(fnVal, remaining))
@@ -330,7 +363,9 @@ object Parser {
       case (intval @ Integer(_, _)) :: t   => parseIdent(intval, t, precedence)
       case (strval @ StringVal(_, _)) :: t => parseIdent(strval, t, precedence)
       case (ident @ Identifier(_, _)) :: t => parseIdent(ident, t, precedence)
-      case e :: _ => Left(f"Parsing Error -> Started at $e")
+      case (bv @ True(_)) :: t             => parseIdent(bv, t, precedence)
+      case (bv @ False(_)) :: t             => parseIdent(bv, t, precedence)
+      case e :: _                          => Left(f"Parsing Error at $e")
     }
   }
 
@@ -473,6 +508,40 @@ object Parser {
     }
   }
 
+  def parseMatch(tokens: List[Token]): Parsed = {
+    println(f"Parsing match: $tokens")
+    for {
+      (valToMatch, remaining) <- parse(tokens)
+      (casesToParse) <- remaining match {
+        case With(_) :: t => Right(t)
+        case _ => Left(f"Expected 'with' after match expression $valToMatch")
+      }
+      (cases, remaining) <- parseMatchCases(casesToParse)
+    } yield (MatchExpr(pattern = valToMatch, caseExprs = cases), remaining)
+  }
+
+  def parseMatchCases(
+      tokens: List[Token],
+      acc: List[CaseExpr] = List()
+  ): Either[String, (List[CaseExpr], List[Token])] = {
+    tokens match {
+      case Nil => Right(acc.reverse, tokens)
+      case Case(_) :: t =>
+        for {
+          (caseExpr, remaining) <- parse(t)
+          (branchToParse) <- remaining match {
+            case RArrow(_) :: t => Right(t)
+            case _ => Left("Expected -> after case branch structure")
+          }
+          (branchExpr, remaining) <- parse(branchToParse)
+          result <-  
+            var expr =  CaseExpr(caseStructure = caseExpr, branchExpr = branchExpr)
+            parseMatchCases(remaining, expr :: acc)
+        } yield result
+      case _ => Right((acc.reverse, tokens))
+    }
+  }
+
   def parseLet(
       ident: Node,
       tokens: List[Token]
@@ -484,8 +553,10 @@ object Parser {
             parse(t).map((r, remaining) =>
               (LetInExpr(name = ident, value = expr, scope = r), remaining)
             )
-          case x :: _ =>
-            Left(f"Let expression must be followed by scope, found $x")
+          case rest @ (x :: _) =>
+            Left(
+              f"Let expression must be followed by scope, found $x in $rest"
+            )
           case Nil => Left("Unexpectedly Reached End")
         }
       case left @ Left(value) => left
@@ -746,11 +817,12 @@ object Evaluator {
 
 object MiniFP {
   def main(args: Array[String]) = {
-    val filename = "strings.mfp"
+    val filename = "match.mfp"
     val input = Source.fromFile(filename).getLines().mkString("\n")
     val result = Tokens
       .tokenize(input.toList)
       .flatMap((_, c) => {
+        print(c)
         Parser.parse(c)
       })
     val evaluated = result match {

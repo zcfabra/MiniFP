@@ -1,0 +1,10 @@
+let x = "a string" in
+
+let check_if_valid(x) = 
+    match x with
+    | "some string" -> false
+    | "a string" -> true
+    | "b string" -> false 
+    | _ -> false
+
+in check_if_valid(x)
