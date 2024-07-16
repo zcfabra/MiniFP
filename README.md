@@ -13,3 +13,18 @@ if final > 10
     then (final + 2) * 20 
     else 0
 ```
+
+MiniFP also has features commonly found in functional languages such as pattern matching:
+
+```
+let x = "a string" in
+
+let check_if_valid(x) = 
+    match x with
+    | "some string" -> false
+    | "a string" -> true
+    | "b string" -> false 
+    | _ -> false
+
+in check_if_valid(x)
+```
