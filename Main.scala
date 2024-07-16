@@ -817,7 +817,7 @@ object Evaluator {
 
 object MiniFP {
   def main(args: Array[String]) = {
-    val filename = "match.mfp"
+    val filename = "examples/match.mfp"
     val input = Source.fromFile(filename).getLines().mkString("\n")
     val result = Tokens
       .tokenize(input.toList)
