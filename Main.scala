@@ -320,7 +320,7 @@ given Ordering[DType] with
 object Ast {
   sealed trait Node
   case class LetInExpr(name: Node, value: Node, scope: Node) extends Node {
-    // override def toString(): String = f"let $name = $value in\n$scope"
+    // override def toString(): String = f"LetInExpr(\n\t[$name = $value] in\n\t( $scope )\n)"
   }
   case class FnCall(name: Identifier, args: FnArgs) extends Node
   case class FnDef(name: Identifier, args: FnArgs) extends Node
@@ -364,7 +364,7 @@ object Parser {
       case (strval @ StringVal(_, _)) :: t => parseIdent(strval, t, precedence)
       case (ident @ Identifier(_, _)) :: t => parseIdent(ident, t, precedence)
       case (bv @ True(_)) :: t             => parseIdent(bv, t, precedence)
-      case (bv @ False(_)) :: t             => parseIdent(bv, t, precedence)
+      case (bv @ False(_)) :: t            => parseIdent(bv, t, precedence)
       case e :: _                          => Left(f"Parsing Error at $e")
     }
   }
@@ -509,7 +509,6 @@ object Parser {
   }
 
   def parseMatch(tokens: List[Token]): Parsed = {
-    println(f"Parsing match: $tokens")
     for {
       (valToMatch, remaining) <- parse(tokens)
       (casesToParse) <- remaining match {
@@ -534,8 +533,9 @@ object Parser {
             case _ => Left("Expected -> after case branch structure")
           }
           (branchExpr, remaining) <- parse(branchToParse)
-          result <-  
-            var expr =  CaseExpr(caseStructure = caseExpr, branchExpr = branchExpr)
+          result <-
+            var expr =
+              CaseExpr(caseStructure = caseExpr, branchExpr = branchExpr)
             parseMatchCases(remaining, expr :: acc)
         } yield result
       case _ => Right((acc.reverse, tokens))
@@ -597,8 +597,9 @@ object Evaluator {
       context: Context = Map.empty[String, Evaluated]
   ): Either[String, Evaluated] = {
     node match {
-      case LiteralExpr(value) => evalLiteral(value, context)
-      case BinaryOp(op, l, r) => evalBinary(op, l, r, context)
+      case LiteralExpr(value)       => evalLiteral(value, context)
+      case BinaryOp(op, l, r)       => evalBinary(op, l, r, context)
+      case MatchExpr(mp, caseExprs) => evalMatchExpr(mp, caseExprs, context)
       case LetInExpr(LiteralExpr(Identifier(name, _)), value, scope) =>
         for {
           assignedVal <- evalNode(value, context)
@@ -612,7 +613,8 @@ object Evaluator {
       case FnCall(Identifier(name, _), args) =>
         for {
           evalArgs <- evalFnArgs(args, context)
-          result <- evalFnCall(name, evalArgs, context)
+          result <-
+            evalFnCall(name, evalArgs, context)
         } yield result
       case IfExpr(cond, thenExpr, elseExpr) =>
         for {
@@ -628,6 +630,35 @@ object Evaluator {
           }
         } yield result
       case x => Left(f"Error when evaluating $x")
+    }
+  }
+
+  def evalMatchExpr(
+      pattern: Node,
+      cases: List[CaseExpr],
+      context: Context
+  ): Either[String, Evaluated] = {
+    for {
+      evalutatedPattern <- evalNode(pattern, context)
+      concretePattern <- getConcreteValue(evalutatedPattern, context)
+      result <- evalCasesUntilMatch(concretePattern, cases, context)
+    } yield result
+  }
+  def evalCasesUntilMatch(
+      evaluatedMatch: Evaluated,
+      cases: List[CaseExpr],
+      context: Context
+  ): Either[String, Evaluated] = {
+    cases match {
+      case Nil => Left("Should be unreachable! -- Failed to match any cases")
+      case CaseExpr(caseStructure, branchExpr) :: t =>
+        for {
+          evaluatedCase <- evalNode(caseStructure)
+          result <-
+            if evaluatedCase == evaluatedMatch
+            then evalNode(branchExpr, context)
+            else evalCasesUntilMatch(evaluatedMatch, t, context)
+        } yield result
     }
   }
 
@@ -653,7 +684,7 @@ object Evaluator {
       defArgs: FnArgs
   ): Either[String, Context] = {
     for {
-      matchedArgs <- checkFnArgs(callArgs, defArgs.args)
+      matchedArgs <- checkFnArgs(callArgs, defArgs.args, context = context)
     } yield matchedArgs.foldRight[Context](context)((toAdd, context) =>
       val (k, v) = toAdd
       addToContext(k, v, context)
@@ -663,7 +694,8 @@ object Evaluator {
   def checkFnArgs(
       callArgs: List[Evaluated],
       defArgs: List[Node],
-      acc: List[(String, Evaluated)] = List()
+      acc: List[(String, Evaluated)] = List(),
+      context: Context
   ): Either[String, List[(String, Evaluated)]] = {
     (callArgs, defArgs) match {
       case (Nil, _ :: _) | (_ :: _, Nil) => Left("Wrong Number of args")
@@ -671,7 +703,15 @@ object Evaluator {
             evaluated :: restCallArgs,
             LiteralExpr(Identifier(name, _)) :: restDefArgs
           ) =>
-        checkFnArgs(restCallArgs, restDefArgs, (name, evaluated) :: acc)
+        for {
+          evaluatedArg <- getConcreteValue(evaluated, context)
+          result <- checkFnArgs(
+            restCallArgs,
+            restDefArgs,
+            (name, evaluatedArg) :: acc,
+            context
+          )
+        } yield result
       case (Nil, Nil) => Right(acc.reverse)
       case (a, b)     => Left(f"Error evaluaing function args $a, $b")
     }
@@ -715,7 +755,9 @@ object Evaluator {
       case Integer(value, _)    => Right(EvaluatedInt(value = value))
       case StringVal(value, _)  => Right(EvaluatedString(value = value))
       case Identifier(value, _) => Right(EvaluatedIdentifier(value = value))
-      case _                    => Left("Invalid Literal")
+      case True(value)          => Right(EvaluatedBool(value = true))
+      case False(value)         => Right(EvaluatedBool(value = false))
+      case e                    => Left(f"Invalid Literal: $e")
     }
 
   }
@@ -822,12 +864,12 @@ object MiniFP {
     val result = Tokens
       .tokenize(input.toList)
       .flatMap((_, c) => {
-        print(c)
         Parser.parse(c)
       })
     val evaluated = result match {
       case l @ Left(value) => l
-      case Right(node, _)  => Evaluator.evalNode(node)
+      case Right(node, _) =>
+        Evaluator.evalNode(node)
     }
 
     evaluated match {
